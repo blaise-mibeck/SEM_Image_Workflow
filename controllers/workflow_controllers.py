@@ -298,13 +298,13 @@ class MagGridController(WorkflowController):
     
     def build_collections(self) -> List[Collection]:
         """
-        Build collections based on MagGrid criteria.
+        Build collections based on MagGrid criteria using spatial containment relationships.
         
         Returns:
             List[Collection]: List of generated collections
         """
         collections = []
-        processed_images = set()
+        processed_high_mag_images = set()  # Track processed high-mag images
         
         # Get all valid images with metadata
         valid_images = {}
@@ -313,7 +313,7 @@ class MagGridController(WorkflowController):
             if metadata and metadata.is_valid():
                 valid_images[image_path] = metadata
         
-        # Group images by mode, high voltage, and intensity
+        # Group images by mode, high voltage, and spot size
         image_groups = {}
         for image_path, metadata in valid_images.items():
             key = (metadata.mode, metadata.high_voltage_kV, metadata.spot_size)
@@ -321,68 +321,140 @@ class MagGridController(WorkflowController):
                 image_groups[key] = []
             image_groups[key].append((image_path, metadata))
         
-        # For each group, build magnification-based collections
         collection_index = 1
+        
+        # For each group (same mode, high voltage, and spot size)
         for (mode, voltage, intensity), images in image_groups.items():
-            # Sort images by magnification (low to high)
-            sorted_images = sorted(images, key=lambda x: x[1].magnification)
+            # Organize images by magnification
+            mag_levels = {}
+            for img_path, img_metadata in images:
+                mag = img_metadata.magnification
+                if mag not in mag_levels:
+                    mag_levels[mag] = []
+                mag_levels[mag].append((img_path, img_metadata))
             
-            # Process each lowest magnification image as a potential seed for a collection
-            for i, (low_img_path, low_img_metadata) in enumerate(sorted_images):
+            # Sort magnifications from high to low
+            sorted_mags = sorted(mag_levels.keys(), reverse=True)
+            
+            # If no magnification levels, skip this group
+            if not sorted_mags:
+                continue
+                
+            # Start with highest magnification images as seeds for collections
+            highest_mag = sorted_mags[0]
+            for high_img_path, high_img_metadata in mag_levels[highest_mag]:
                 # Skip if already processed
-                if low_img_path in processed_images:
+                if high_img_path in processed_high_mag_images:
                     continue
-                    
-                # Only use as seed if it's a low magnification image
-                # Here we use the first 25% of images as potential collection seeds
-                if i >= len(sorted_images) // 4:
-                    continue
-                    
-                # Start new collection for this seed image
+                
+                # Create a new collection 
                 collection = MagGridCollection(f"MagGrid_{collection_index}")
-                collection.add_image(low_img_path, low_img_metadata.magnification)
-                processed_images.add(low_img_path)
+                collection_index += 1
                 
-                # Flag to track if any higher mag images were added to this collection
-                added_higher_mag = False
+                # Add the high-mag image to the collection
+                collection.add_image(high_img_path, high_img_metadata.magnification)
                 
-                # Find all direct higher magnification images contained within this one
-                for high_img_path, high_img_metadata in sorted_images:
-                    # Skip if already processed or if it's the seed image itself
-                    if high_img_path in processed_images or high_img_path == low_img_path:
-                        continue
+                # Mark as processed
+                processed_high_mag_images.add(high_img_path)
+                
+                # Build the containment chain for this high-mag image
+                current_img_path = high_img_path
+                current_img_metadata = high_img_metadata
+                
+                # For each lower magnification level
+                for mag in sorted_mags[1:]:  # Skip the highest mag (already added)
+                    # Find best containing image at this magnification
+                    best_container = self._find_best_container(current_img_metadata, mag_levels[mag])
                     
-                    # Only add if the magnification is higher
-                    if high_img_metadata.magnification <= low_img_metadata.magnification:
-                        continue
+                    if best_container:
+                        container_path, container_metadata = best_container
                         
-                    # Check strict containment with clearer spatial distance threshold
-                    if not isinstance(collection, MagGridCollection):
-                        continue
+                        # Add to collection
+                        collection.add_image(container_path, container_metadata.magnification)
                         
-                    # Perform containment check with stricter criteria
-                    if self._check_strict_containment(low_img_path, high_img_path, 
-                                                low_img_metadata, high_img_metadata):
-                        collection.add_image(high_img_path, high_img_metadata.magnification)
-                        collection.set_hierarchy(low_img_path, [high_img_path])
-                        processed_images.add(high_img_path)
-                        added_higher_mag = True
+                        # Set hierarchy relationship
+                        collection.set_hierarchy(container_path, [current_img_path])
+                        
+                        # Update current image for next level
+                        current_img_path = container_path
+                        current_img_metadata = container_metadata
+                    else:
+                        # No container found at this magnification level, break the chain
+                        break
                 
-                # Only add collection if it has at least 2 images and has higher mag images
-                if len(collection.images) >= 2 and added_higher_mag:
+                # Only add collections with at least 2 images (a hierarchy)
+                if len(collection.images) >= 2:
                     collections.append(collection)
-                    collection_index += 1
         
         return collections
-
-    def _check_strict_containment(self, low_img_path: str, high_img_path: str, 
-                            low_metadata: Any, high_metadata: Any) -> bool:
+    
+    def _find_best_container(self, target_metadata, candidate_images):
         """
-        Perform a stricter check if high mag image is contained within low mag image.
+        Find the best containing image for a target image.
         
         Args:
-            low_img_path (str): Path to lower magnification image
-            high_img_path (str): Path to higher magnification image
+            target_metadata: Metadata for the target (higher magnification) image
+            candidate_images: List of (path, metadata) tuples for potential container images
+            
+        Returns:
+            Tuple of (path, metadata) for the best container, or None if none found
+        """
+        valid_containers = []
+        
+        for candidate_path, candidate_metadata in candidate_images:
+            # Check if candidate contains target with 10% margin
+            is_contained = self._check_strict_containment(candidate_metadata, target_metadata)
+            
+            if is_contained:
+                valid_containers.append((candidate_path, candidate_metadata, 
+                                         self._calculate_containment_score(candidate_metadata, target_metadata)))
+        
+        if not valid_containers:
+            return None
+            
+        # Choose the container with the best score (lower is better)
+        best_container = min(valid_containers, key=lambda x: x[2])
+        return best_container[0], best_container[1]
+    
+    def _calculate_containment_score(self, container_metadata, contained_metadata):
+        """
+        Calculate a score for how well a container contains an image.
+        Lower score is better - represents a tighter, more centered containment.
+        
+        Args:
+            container_metadata: Metadata for the container (lower magnification) image
+            contained_metadata: Metadata for the contained (higher magnification) image
+            
+        Returns:
+            float: Containment score (lower is better)
+        """
+        # Calculate center offset
+        container_center_x = container_metadata.sample_position_x
+        container_center_y = container_metadata.sample_position_y
+        contained_center_x = contained_metadata.sample_position_x
+        contained_center_y = contained_metadata.sample_position_y
+        
+        # Calculate normalized offset from center (0-1 range where 0 is perfect centering)
+        offset_x = abs(container_center_x - contained_center_x) / (container_metadata.field_of_view_width / 2)
+        offset_y = abs(container_center_y - contained_center_y) / (container_metadata.field_of_view_height / 2)
+        
+        # Calculate size ratio (how much of the container is used by the contained image)
+        area_container = container_metadata.field_of_view_width * container_metadata.field_of_view_height
+        area_contained = contained_metadata.field_of_view_width * contained_metadata.field_of_view_height
+        size_ratio = area_contained / area_container
+        
+        # Combined score: balance between centering and size efficiency
+        # Weighted to prefer more centered containment
+        centering_score = (offset_x + offset_y) * 0.7
+        size_score = (1 - size_ratio) * 0.3  # Smaller ratio (bigger difference) increases score
+        
+        return centering_score + size_score
+    
+    def _check_strict_containment(self, low_metadata: Any, high_metadata: Any) -> bool:
+        """
+        Check if high mag image is contained within low mag image.
+        
+        Args:
             low_metadata (Any): Metadata for lower magnification image
             high_metadata (Any): Metadata for higher magnification image
             
@@ -412,7 +484,7 @@ class MagGridController(WorkflowController):
         high_top = high_y - (high_height / 2)
         high_bottom = high_y + (high_height / 2)
         
-        # Stricter containment check - must be well within the boundaries (10% margin)
+        # Containment check with 10% margin
         margin_x = low_width * 0.1
         margin_y = low_height * 0.1
         
@@ -581,8 +653,8 @@ class MagGridController(WorkflowController):
                             next_metadata = self.get_metadata(next_image_path)
                             
                             if current_metadata and next_metadata:
-                                # Calculate bounding box coordinates
-                                bbox = collection.calculate_bounding_box(current_metadata, next_metadata)
+                                # Calculate bounding box coordinates using spatial data
+                                bbox = self._calculate_bounding_box(current_metadata, next_metadata)
                                 
                                 # Convert normalized coordinates to pixel coordinates
                                 x1 = x_pos + int(bbox[0] * img.width)
@@ -610,6 +682,56 @@ class MagGridController(WorkflowController):
             y_offset += row_heights[r] + padding
         
         return grid_img
+    
+    def _calculate_bounding_box(self, low_metadata: Any, high_metadata: Any) -> Tuple[float, float, float, float]:
+        """
+        Calculate accurate bounding box coordinates for high mag image within low mag image.
+        Converts microscope coordinates to normalized image coordinates.
+        
+        Args:
+            low_metadata (Any): Metadata for lower magnification image
+            high_metadata (Any): Metadata for higher magnification image
+            
+        Returns:
+            Tuple[float, float, float, float]: (x1, y1, x2, y2) coordinates of bounding box
+            normalized to [0,1] range where (0,0) is top-left and (1,1) is bottom-right
+        """
+        # Get positions and field of view dimensions (in microscope coordinates, μm)
+        low_center_x = low_metadata.sample_position_x
+        low_center_y = low_metadata.sample_position_y
+        low_width = low_metadata.field_of_view_width
+        low_height = low_metadata.field_of_view_height
+        
+        high_center_x = high_metadata.sample_position_x
+        high_center_y = high_metadata.sample_position_y
+        high_width = high_metadata.field_of_view_width
+        high_height = high_metadata.field_of_view_height
+        
+        # Calculate boundaries of the low mag image in microscope coordinates
+        low_left = low_center_x - (low_width / 2)
+        low_top = low_center_y - (low_height / 2)
+        
+        # Calculate boundaries of the high mag image in microscope coordinates
+        high_left = high_center_x - (high_width / 2)
+        high_right = high_center_x + (high_width / 2)
+        high_top = high_center_y - (high_height / 2)
+        high_bottom = high_center_y + (high_height / 2)
+        
+        # Convert microscope coordinates to normalized image coordinates (0-1)
+        # where (0,0) is the top-left of the low mag image and (1,1) is the bottom-right
+        x1 = (high_left - low_left) / low_width
+        y1 = (high_top - low_top) / low_height
+        x2 = (high_right - low_left) / low_width
+        y2 = (high_bottom - low_top) / low_height
+        
+        # Ensure coordinates are within [0,1] range
+        # This handles edge cases where the high mag image might extend beyond the low mag image
+        x1 = max(0, min(1, x1))
+        y1 = max(0, min(1, y1))
+        x2 = max(0, min(1, x2))
+        y2 = max(0, min(1, y2))
+        
+        return (x1, y1, x2, y2)
     
     def _generate_workflow_specific_caption(self, collection: Collection) -> str:
         """
@@ -642,8 +764,7 @@ class MagGridController(WorkflowController):
                 caption += f"Spot size: {metadata.spot_size}\n"
         
         return caption
-
-
+    
 class ModeGridController(WorkflowController):
     """Controller for ModeGrid workflow."""
     

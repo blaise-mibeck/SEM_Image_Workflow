@@ -65,12 +65,17 @@ class Session:
         """Scan the session folder for images (only in the root folder, not subfolders)."""
         self.images = []
         
-        # Only look at files directly in the session folder, not in subfolders
-        for file in os.listdir(self.folder_path):
-            file_path = os.path.join(self.folder_path, file)
-            # Only include files (not directories) that are .tiff or .tif
-            if os.path.isfile(file_path) and file.lower().endswith(('.tiff', '.tif')):
-                self.images.append(file_path)
+        # Only process files directly in the session folder, not in subfolders
+        for item in os.listdir(self.folder_path):
+            item_path = os.path.join(self.folder_path, item)
+            
+            # Skip directories/subfolders
+            if os.path.isdir(item_path):
+                continue
+                
+            # Only include files that are .tiff 
+            if item_path.lower().endswith(('.tiff')):
+                self.images.append(item_path)
     
     def add_edit_record(self, user: str, field: str, old_value: Any, new_value: Any) -> None:
         """Track changes to session information."""
