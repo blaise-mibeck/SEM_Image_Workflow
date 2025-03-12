@@ -17,6 +17,8 @@ import datetime
 from models.session import Session, SessionRepository
 from controllers.workflow_controllers import WorkflowFactory
 from controllers.metadata_controller import MetadataExtractor
+# Import the enhanced controller
+from controllers.enhanced_maggrid_controller import EnhancedMagGridController
 
 # Configuration and constants
 APP_TITLE = "SEM Image Workflow Manager"
@@ -149,6 +151,7 @@ class App:
         # Workflow menu
         workflow_menu = tk.Menu(menubar, tearoff=0)
         workflow_menu.add_command(label="MagGrid", command=lambda: self._switch_workflow("MagGrid"))
+        workflow_menu.add_command(label="Enhanced MagGrid", command=lambda: self._switch_workflow("EnhancedMagGrid"))
         workflow_menu.add_command(label="ModeGrid", command=lambda: self._switch_workflow("ModeGrid"))
         workflow_menu.add_command(label="CompareGrid", command=lambda: self._switch_workflow("CompareGrid"))
         workflow_menu.add_command(label="MakeGrid", command=lambda: self._switch_workflow("MakeGrid"))
@@ -690,7 +693,7 @@ class App:
         ttk.Label(scrollable_frame, text=f"Images: {len(collection.images)}").pack(anchor=tk.W, padx=10, pady=2)
         
         # Add workflow-specific details
-        if collection.workflow_type == "MagGrid":
+        if collection.workflow_type == "MagGrid" or collection.workflow_type == "EnhancedMagGrid":
             ttk.Label(scrollable_frame, text=f"Magnification Levels: {len(collection.magnification_levels)}").pack(anchor=tk.W, padx=10, pady=2)
             ttk.Label(scrollable_frame, text="Magnifications:").pack(anchor=tk.W, padx=10, pady=2)
             for mag in sorted(collection.magnification_levels.keys()):
@@ -823,6 +826,10 @@ class App:
             ttk.Radiobutton(frame, text="Solid", variable=annotation_var, value="solid").grid(row=0, column=3, sticky=tk.W, pady=5)
             ttk.Radiobutton(frame, text="Dotted", variable=annotation_var, value="dotted").grid(row=1, column=3, sticky=tk.W, pady=5)
             ttk.Radiobutton(frame, text="None", variable=annotation_var, value="none").grid(row=2, column=3, sticky=tk.W, pady=5)
+            
+            # Add Template Match option for EnhancedMagGrid
+            if collection.workflow_type == "EnhancedMagGrid":
+                ttk.Radiobutton(frame, text="Template Match", variable=annotation_var, value="template").grid(row=3, column=3, sticky=tk.W, pady=5)
             
             # Output path
             ttk.Label(frame, text="Output Path:").grid(row=4, column=0, sticky=tk.W, pady=5)

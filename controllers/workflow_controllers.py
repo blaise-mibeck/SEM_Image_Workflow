@@ -485,8 +485,8 @@ class MagGridController(WorkflowController):
         high_bottom = high_y + (high_height / 2)
         
         # Containment check with 10% margin
-        margin_x = low_width * 0.1
-        margin_y = low_height * 0.1
+        margin_x = low_width * 0.01
+        margin_y = low_height * 0.01
         
         strict_containment = (
             high_left >= (low_left + margin_x) and
@@ -497,7 +497,7 @@ class MagGridController(WorkflowController):
         
         # Additional check: make sure there's a significant difference in magnification
         mag_ratio = high_metadata.magnification / low_metadata.magnification
-        significant_mag_difference = mag_ratio >= 1.5  # At least 50% higher magnification
+        significant_mag_difference = mag_ratio >= 1.2  # At least 20% higher magnification
         
         return strict_containment and significant_mag_difference
     
