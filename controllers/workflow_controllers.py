@@ -1256,6 +1256,10 @@ class WorkflowFactory:
         """
         if workflow_type == "MagGrid":
             return MagGridController(session)
+        elif workflow_type == "EnhancedMagGrid":
+            # Import here to avoid circular imports
+            from controllers.enhanced_maggrid_controller import EnhancedMagGridController
+            return EnhancedMagGridController(session)
         elif workflow_type == "ModeGrid":
             return ModeGridController(session)
         elif workflow_type == "CompareGrid":

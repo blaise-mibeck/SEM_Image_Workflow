@@ -1,12 +1,12 @@
 {
     "recent_sessions": [
         "C:/Z/_Blaise_Tools/_Notes/SEM1-403",
-        "//TCL-01-VSRV02/CompanyShare/Users/bmibeck/My Documents/_SEM/Premier_Magnesia_SEM/SEM1-352",
         "//TCL-01-VSRV02/CompanyShare/Users/bmibeck/My Documents/_SEM/Premier_Magnesia_SEM/SEM1-351",
+        "//TCL-01-VSRV02/CompanyShare/Users/bmibeck/My Documents/_SEM/Premier_Magnesia_SEM/SEM1-352",
         "T:/Clients/P-R/Premier Magnesia/Projects/2024422_NonGMP_Epsom Salt_/Data/SEM/SEM1-351",
         "//TCL-01-VSRV02/CompanyShare/Users/bmibeck/My Documents/_SEM/SEM1-270",
         "C:/Z/_Blaise_Tools/SEM_Image_Workflow/_Notes/SEM1-422"
     ],
     "last_user": "",
-    "default_workflow": "MagGrid"
+    "default_workflow": "EnhancedMagGrid"
 }

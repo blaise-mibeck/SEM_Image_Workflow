@@ -458,7 +458,7 @@ class App:
         self.status_var.set(f"Switched to {workflow_type} workflow")
     
     def _update_workflow_display(self):
-        """Update workflow display."""
+        """Update workflow display with repositioned panes."""
         # Clear existing widgets
         for widget in self.workflow_frame.winfo_children():
             widget.destroy()
@@ -471,13 +471,27 @@ class App:
         frame = ttk.Frame(self.workflow_frame, padding=10)
         frame.pack(fill=tk.BOTH, expand=True)
         
-        # Create collections list frame
-        collections_frame = ttk.LabelFrame(frame, text="Collections")
-        collections_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+        # Use PanedWindow to allow resizable sections - with horizontal orientation
+        paned_window = ttk.PanedWindow(frame, orient=tk.HORIZONTAL)
+        paned_window.pack(fill=tk.BOTH, expand=True)
+        
+        # Left frame for collections list (narrow)
+        collections_frame = ttk.LabelFrame(paned_window, text="Collections")
+        
+        # Middle frame for collection details (medium width)
+        details_frame = ttk.LabelFrame(paned_window, text="Collection Details")
+        
+        # Right frame for preview (maximum width)
+        preview_frame = ttk.LabelFrame(paned_window, text="Preview")
+        
+        # Add all frames to the paned window with appropriate weights
+        paned_window.add(collections_frame, weight=1)
+        paned_window.add(details_frame, weight=2)
+        paned_window.add(preview_frame, weight=4)  # Give preview the most space
         
         # Create collections listbox
-        collections_listbox = tk.Listbox(collections_frame, width=30, height=15)
-        collections_listbox.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+        collections_listbox = tk.Listbox(collections_frame, width=20, height=15)  # Reduced width
+        collections_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Add scrollbar
         scrollbar = ttk.Scrollbar(collections_frame, orient=tk.VERTICAL, command=collections_listbox.yview)
@@ -497,29 +511,23 @@ class App:
         
         # Collection buttons
         ttk.Button(collection_buttons_frame, text="New", 
-                  command=self._create_new_collection).pack(side=tk.LEFT, padx=2)
+                command=self._create_new_collection).pack(side=tk.LEFT, padx=2)
         ttk.Button(collection_buttons_frame, text="Delete", 
-                  command=lambda: self._delete_collection(collections_listbox)).pack(side=tk.LEFT, padx=2)
+                command=lambda: self._delete_collection(collections_listbox)).pack(side=tk.LEFT, padx=2)
         ttk.Button(collection_buttons_frame, text="Build", 
-                  command=self._build_collections).pack(side=tk.LEFT, padx=2)
-        
-        # Create collection details frame
-        details_frame = ttk.LabelFrame(frame, text="Collection Details")
-        details_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
+                command=self._build_collections).pack(side=tk.LEFT, padx=2)
         
         # Placeholder for collection details
         ttk.Label(details_frame, text="Select a collection to view details").pack(pady=10)
         
-        # Create preview frame
-        preview_frame = ttk.LabelFrame(frame, text="Preview")
-        preview_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
         # Placeholder for preview
         ttk.Label(preview_frame, text="Select a collection to preview").pack(pady=10)
         
-        # Export button
-        ttk.Button(preview_frame, text="Export Grid", 
-                  command=lambda: self._export_grid(collections_listbox)).pack(side=tk.BOTTOM, pady=5)
+        # Export button in preview frame
+        export_btn_frame = ttk.Frame(preview_frame)
+        export_btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
+        ttk.Button(export_btn_frame, text="Export Grid", 
+                command=lambda: self._export_grid(collections_listbox)).pack(side=tk.RIGHT, padx=5)
         
         # Bind collection selection
         def on_collection_select(event):
@@ -738,31 +746,64 @@ class App:
             # Create grid visualization
             grid_img = self.current_workflow.create_grid_visualization(collection)
             
-            # Resize for preview (maintain aspect ratio)
-            max_width = 400
-            max_height = 300
+            # Get available preview size - use frame's dimensions or default to larger values
+            frame.update_idletasks()  # Refresh to get current dimensions
+            frame_width = frame.winfo_width() 
+            frame_height = frame.winfo_height()
             
+            # Set minimum dimensions for preview
+            max_width = max(800, frame_width - 20)
+            max_height = max(600, frame_height - 60)  # Leave space for buttons
+            
+            # Get image dimensions
             width, height = grid_img.size
+            
+            # Calculate scaling ratio to fit within available space
             ratio = min(max_width / width, max_height / height)
             new_size = (int(width * ratio), int(height * ratio))
             
+            # Resize image
             resized_img = grid_img.resize(new_size, Image.LANCZOS)
             
             # Convert to PhotoImage
             photo = ImageTk.PhotoImage(resized_img)
             
-            # Add to frame
-            img_label = ttk.Label(frame, image=photo)
-            img_label.image = photo  # Keep a reference to prevent garbage collection
-            img_label.pack(pady=5)
+            # Create a canvas to display image (so we can scroll if needed)
+            canvas_frame = ttk.Frame(frame)
+            canvas_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            
+            canvas = tk.Canvas(canvas_frame, width=new_size[0], height=new_size[1])
+            canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            
+            # Add scrollbars if image is large
+            if new_size[0] > max_width or new_size[1] > max_height:
+                h_scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL, command=canvas.xview)
+                v_scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=canvas.yview)
+                canvas.configure(xscrollcommand=h_scrollbar.set, yscrollcommand=v_scrollbar.set)
+                
+                h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+                v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+                
+                canvas.configure(scrollregion=(0, 0, new_size[0], new_size[1]))
+            
+            # Add image to canvas
+            img_item = canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+            canvas.image = photo  # Keep a reference to prevent garbage collection
             
             # Add export button
-            ttk.Button(frame, text="Export Grid", 
-                      command=lambda: self._export_grid_for_collection(collection)).pack(pady=5)
+            btn_frame = ttk.Frame(frame)
+            btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
+            ttk.Button(btn_frame, text="Export Grid", 
+                    command=lambda: self._export_grid_for_collection(collection)).pack(side=tk.RIGHT, padx=5)
+            
+            # Add magnification info
+            if hasattr(collection, 'magnification_levels') and collection.magnification_levels:
+                mag_info = "Magnifications: " + ", ".join([f"{mag}x" for mag in sorted(collection.magnification_levels.keys())])
+                ttk.Label(btn_frame, text=mag_info).pack(side=tk.LEFT, padx=5)
             
         except Exception as e:
             ttk.Label(frame, text=f"Error generating preview: {str(e)}").pack(pady=10)
-    
+            
     def _export_grid(self, listbox):
         """
         Export grid for the selected collection.
