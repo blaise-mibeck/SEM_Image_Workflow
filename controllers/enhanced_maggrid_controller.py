@@ -118,9 +118,29 @@ class EnhancedMagGridController(MagGridController):
         # Use the enhanced find_best_container method
         return super().build_collections()
     
+    def _get_debug_match_image_path(self, high_path: str, low_path: str) -> Optional[str]:
+        """
+        Get the path to the debug match image.
+        
+        Args:
+            high_path (str): Path to high magnification image
+            low_path (str): Path to low magnification image
+            
+        Returns:
+            Optional[str]: Path to debug match image or None if not found
+        """
+        debug_dir = os.path.join(os.path.dirname(low_path), "debug_matches")
+        debug_filename = f"match_{os.path.basename(high_path)}_in_{os.path.basename(low_path)}.jpg"
+        debug_path = os.path.join(debug_dir, debug_filename)
+        
+        if os.path.exists(debug_path):
+            return debug_path
+        return None
+    
     def create_grid_visualization(self, collection, layout=None, annotation_style="solid", preserve_resolution=True):
         """
-        Create enhanced grid visualization for a MagGrid collection.
+        Create grid visualization with template matching annotations.
+        Only uses debug match images from disk, never falls back to originals.
         
         Args:
             collection (Collection): Collection to visualize
@@ -131,24 +151,9 @@ class EnhancedMagGridController(MagGridController):
         Returns:
             Image.Image: Grid visualization image
         """
-        # Start with the base grid visualization (without annotations if we're using template)
-        if annotation_style == "template":
-            base_annotation_style = "none"  # No standard annotations if using template
-        else:
-            base_annotation_style = annotation_style
-            
-        grid_img = super().create_grid_visualization(collection, layout, base_annotation_style, preserve_resolution)
-        
-        # If annotation style is "none" or not "template", just return the base grid
-        if annotation_style == "none" or annotation_style != "template":
-            return grid_img
-            
-        # Convert to PIL Image if it's not already
-        if not isinstance(grid_img, Image.Image):
-            grid_img = Image.fromarray(np.array(grid_img))
-        
-        # Create a draw object
-        draw = ImageDraw.Draw(grid_img)
+        # If we're not using template annotations, use parent class method
+        if annotation_style != "template":
+            return super().create_grid_visualization(collection, layout, annotation_style, preserve_resolution)
         
         # Get the sorted magnifications
         magnifications = collection.get_sorted_magnifications()
@@ -158,155 +163,151 @@ class EnhancedMagGridController(MagGridController):
             rows, cols = layout
         else:
             rows, cols = self.calculate_grid_layout(len(magnifications))
-            
-        # Load images and get their positions in the grid
-        images_info = []
         
-        # Dictionary to store exact image positions in the grid
-        grid_positions = {}
+        # STEP 1: Find all debug match images to use
+        debug_match_images = {}
         
-        # First, populate image positions in the grid
-        for i, mag in enumerate(magnifications[:rows*cols]):
-            # Calculate grid position
-            row = i // cols
-            col = i % cols
+        # Find debug match images for each magnification level (except highest)
+        for mag in magnifications:
+            # Skip highest magnification (no higher-mag images will be contained in it)
+            if mag == max(magnifications):
+                continue
             
-            # Get first image at this magnification
+            # Get images at this magnification
             img_paths = collection.get_images_at_magnification(mag)
             if not img_paths:
                 continue
+            
+            # For each image at this magnification
+            for low_path in img_paths:
+                # Get higher-mag images that should be contained in this one
+                contained_paths = collection.hierarchy.get(low_path, [])
+                if not contained_paths:
+                    continue
                 
-            img_path = img_paths[0]
-            
-            # Calculate cell position
-            cell_width = grid_img.width // cols
-            cell_height = grid_img.height // rows
-            cell_x = col * cell_width
-            cell_y = row * cell_height
-            
-            # Open the image to get dimensions
-            with Image.open(img_path) as img:
-                img_width, img_height = img.size
-            
-            # Calculate the exact position where the image is placed in the grid
-            # This is based on the exact centering logic in the parent class
-            x_pos = cell_x + (cell_width - img_width) // 2
-            y_pos = cell_y + (cell_height - img_height) // 2
-            
-            # Store the position info
-            grid_positions[img_path] = {
-                'x': x_pos,
-                'y': y_pos,
-                'width': img_width,
-                'height': img_height
-            }
-            
-            images_info.append({
-                'mag': mag,
-                'path': img_path,
-                'row': row,
-                'col': col,
-                'cell_x': cell_x,
-                'cell_y': cell_y,
-                'cell_width': cell_width,
-                'cell_height': cell_height,
-                'x_pos': x_pos,
-                'y_pos': y_pos,
-                'width': img_width,
-                'height': img_height
-            })
+                # Look for debug match images
+                for high_path in contained_paths:
+                    match_img_path = self._get_debug_match_image_path(high_path, low_path)
+                    if match_img_path:
+                        logging.info(f"Found debug match image: {match_img_path}")
+                        debug_match_images[low_path] = match_img_path
+                        break  # Use the first debug match image found
         
-        # Now draw template match boxes using the cached match results
-        for low_idx, low_info in enumerate(images_info[:-1]):  # Skip highest mag
-            low_mag_path = low_info['path']
-            
-            # Check for matches with higher magnification images
-            for high_info in images_info[low_idx+1:]:
-                high_mag_path = high_info['path']
-                
-                # Skip if not in hierarchy
-                if high_mag_path not in collection.hierarchy.get(low_mag_path, []):
-                    continue
-                
-                # Check template match cache
-                cache_key = (high_mag_path, low_mag_path)
-                if cache_key not in self.template_match_cache:
-                    continue
-                    
-                is_contained, match_result = self.template_match_cache[cache_key]
-                
-                if not is_contained or 'top_left' not in match_result or 'bottom_right' not in match_result:
-                    continue
-                
-                # Get the original match coordinates
-                top_left = match_result['top_left']
-                bottom_right = match_result['bottom_right']
-                
-                # Get the position of the low mag image in the grid
-                low_img_pos = grid_positions.get(low_mag_path)
-                if not low_img_pos:
-                    continue
-                
-                # Calculate the box position in the grid
-                grid_x1 = low_img_pos['x'] + top_left[0]
-                grid_y1 = low_img_pos['y'] + top_left[1]
-                grid_x2 = low_img_pos['x'] + bottom_right[0]
-                grid_y2 = low_img_pos['y'] + bottom_right[1]
-                
-                # Draw rectangle
-                draw.rectangle([grid_x1, grid_y1, grid_x2, grid_y2], outline=(255, 0, 0), width=3)
-                
-                # Draw a second rectangle slightly inside for better visibility
-                inner_margin = 2
-                if grid_x2 - grid_x1 > 10 and grid_y2 - grid_y1 > 10:  # Only if big enough
-                    draw.rectangle([
-                        grid_x1 + inner_margin, 
-                        grid_y1 + inner_margin, 
-                        grid_x2 - inner_margin, 
-                        grid_y2 - inner_margin
-                    ], outline=(255, 255, 0), width=1)
-                
-                # Add match score if available
-                if 'score' in match_result:
-                    score = match_result['score']
-                    try:
-                        font = ImageFont.truetype("arial.ttf", 10)
-                    except:
-                        font = ImageFont.load_default()
-                        
-                    score_text = f"{score:.2f}"
-                    draw.text((grid_x1 + 5, grid_y1 + 5), score_text, fill=(255, 0, 0), font=font)
-                
-                # Store the grid coordinates in the match result for later reference
-                match_result['grid_box'] = {
-                    'top_left': (grid_x1, grid_y1),
-                    'bottom_right': (grid_x2, grid_y2)
-                }
-            
-        # Create a debug grid with helper visualization
-        debug_img = grid_img.copy()
-        debug_draw = ImageDraw.Draw(debug_img)
+        # STEP 2: Prepare image list for grid creation
+        grid_images = []
         
-        # Draw grid cell borders for debugging
-        for info in images_info:
-            # Draw cell border (green)
-            debug_draw.rectangle([
-                info['cell_x'], info['cell_y'], 
-                info['cell_x'] + info['cell_width'] - 1, 
-                info['cell_y'] + info['cell_height'] - 1
-            ], outline=(0, 255, 0), width=1)
+        # Add debug match images for all magnifications except highest
+        for mag in magnifications[:rows*cols]:
+            # Skip if it's the highest magnification
+            if mag == max(magnifications):
+                continue
+                
+            # Get images at this magnification
+            img_paths = collection.get_images_at_magnification(mag)
+            if not img_paths:
+                continue
             
-            # Draw image border (blue)
-            debug_draw.rectangle([
-                info['x_pos'], info['y_pos'],
-                info['x_pos'] + info['width'] - 1,
-                info['y_pos'] + info['height'] - 1
-            ], outline=(0, 0, 255), width=1)
+            img_path = img_paths[0]  # Use first image at this magnification
+            
+            # Only use debug match image if available
+            if img_path in debug_match_images:
+                try:
+                    match_img = Image.open(debug_match_images[img_path])
+                    grid_images.append((img_path, match_img, mag))
+                    logging.info(f"Using debug match image for {os.path.basename(img_path)}")
+                except Exception as e:
+                    logging.error(f"Error loading debug match image {debug_match_images[img_path]}: {e}")
         
-        # Save debug grid image
+        # Add highest magnification images
+        highest_mag = max(magnifications)
+        highest_img_paths = collection.get_images_at_magnification(highest_mag)
+        if highest_img_paths:
+            try:
+                highest_img = Image.open(highest_img_paths[0])
+                grid_images.append((highest_img_paths[0], highest_img, highest_mag))
+                logging.info(f"Using highest mag image: {os.path.basename(highest_img_paths[0])}")
+            except Exception as e:
+                logging.error(f"Error loading highest mag image {highest_img_paths[0]}: {e}")
+        
+        # If no images, return empty grid
+        if not grid_images:
+            logging.error("No debug match images available for grid visualization")
+            return Image.new('RGB', (400, 300), (255, 255, 255))
+        
+        # STEP 3: Create the grid
+        # Process images for grid creation
+        if preserve_resolution:
+            # Use original dimensions
+            images_to_use = []
+            for image_path, img, mag in grid_images:
+                images_to_use.append((image_path, img.copy(), mag))
+        else:
+            # Normalize dimensions
+            target_width = max(img.width for _, img, _ in grid_images)
+            images_to_use = []
+            for image_path, img, mag in grid_images:
+                aspect_ratio = img.height / img.width
+                new_height = int(target_width * aspect_ratio)
+                resized_img = img.resize((target_width, new_height), Image.LANCZOS)
+                images_to_use.append((image_path, resized_img, mag))
+        
+        # Padding between images
+        padding = 4
+        
+        # Create grid layout
+        grid_layout = []
+        for r in range(rows):
+            row_images = []
+            for c in range(cols):
+                idx = r * cols + c
+                if idx < len(images_to_use):
+                    row_images.append(images_to_use[idx])
+            if row_images:
+                grid_layout.append(row_images)
+        
+        # Calculate dimensions
+        row_heights = [max(img.height for _, img, _ in row) for row in grid_layout]
+        col_widths = []
+        for c in range(cols):
+            width = 0
+            for r in range(rows):
+                if r < len(grid_layout) and c < len(grid_layout[r]):
+                    width = max(width, grid_layout[r][c][1].width)
+            col_widths.append(width)
+        
+        total_width = sum(col_widths) + (cols - 1) * padding
+        total_height = sum(row_heights) + (rows - 1) * padding
+        
+        # Create grid image
+        grid_img = Image.new('RGB', (total_width, total_height), (255, 255, 255))
+        
+        # Place images in grid
+        y_offset = 0
+        for r, row in enumerate(grid_layout):
+            x_offset = 0
+            for c, (image_path, img, mag) in enumerate(row):
+                # Center the image in its cell
+                cell_width = col_widths[c]
+                cell_height = row_heights[r]
+                x_pos = x_offset + (cell_width - img.width) // 2
+                y_pos = y_offset + (cell_height - img.height) // 2
+                
+                # Paste image into grid
+                grid_img.paste(img, (x_pos, y_pos))
+                
+                # Log which image is being placed
+                logging.info(f"Placed image in grid: {os.path.basename(image_path)} at position ({x_pos},{y_pos})")
+                
+                x_offset += cell_width + padding
+            
+            y_offset += row_heights[r] + padding
+        
+        # Save a debug copy
         debug_dir = os.path.join(self.workflow_folder, "debug")
         os.makedirs(debug_dir, exist_ok=True)
-        debug_img.save(os.path.join(debug_dir, f"grid_debug_{collection.name}.png"))
+        debug_path = os.path.join(debug_dir, f"grid_debug_{collection.name}.png")
+        grid_img.save(debug_path)
+        logging.info(f"Saved debug grid image: {debug_path}")
         
         return grid_img
     
@@ -436,14 +437,12 @@ class EnhancedMagGridController(MagGridController):
                             serializable_result["low_img_shape"] = list(match_result["low_img_shape"])
                         if 'high_img_shape' in match_result:
                             serializable_result["high_img_shape"] = list(match_result["high_img_shape"])
-                            
-                        # Grid box coordinates if available
-                        if 'grid_box' in match_result:
-                            serializable_result["grid_box"] = {
-                                "top_left": list(match_result["grid_box"]["top_left"]),
-                                "bottom_right": list(match_result["grid_box"]["bottom_right"])
-                            }
                         
+                        # Add debug match image path
+                        debug_match_path = self._get_debug_match_image_path(high_path, low_path)
+                        if debug_match_path:
+                            serializable_result["debug_match_path"] = debug_match_path
+                            
                         matches_data[f"{high_name} in {low_name}"] = serializable_result
             
             # Save to file

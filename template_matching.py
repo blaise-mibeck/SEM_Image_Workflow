@@ -8,6 +8,7 @@ import numpy as np
 import os
 import logging
 from typing import Dict, Tuple, Any, Optional
+from PIL import Image
 
 
 class TemplateMatchingHelper:
@@ -185,7 +186,27 @@ class TemplateMatchingHelper:
                         debug_path = os.path.join(debug_dir, debug_filename)
                         cv2.imwrite(debug_path, low_img_color)
                         
+                        # NEW: Save the annotated image as a second file for direct use in the grid
+                        annotated_dir = os.path.join(os.path.dirname(low_img_path), "annotated_matches")
+                        os.makedirs(annotated_dir, exist_ok=True)
+                        
+                        # Create filename for the annotated version
+                        annotated_filename = f"annotated_{os.path.basename(low_img_path)}"
+                        annotated_path = os.path.join(annotated_dir, annotated_filename)
+                        
+                        # Save the annotated image in original format (typically TIFF)
+                        # First convert from BGR to RGB for PIL
+                        low_img_rgb = cv2.cvtColor(low_img_color, cv2.COLOR_BGR2RGB)
+                        
+                        # Use PIL to save in original format
+                        pil_img = Image.fromarray(low_img_rgb)
+                        pil_img.save(annotated_path)
+                        
+                        # Add the annotated image path to the match result
+                        match_result["annotated_image_path"] = annotated_path
+                        
                         logging.debug("Saved debug match visualization: %s", debug_path)
+                        logging.debug("Saved annotated image for grid: %s", annotated_path)
                 except Exception as e:
                     logging.debug("Failed to save debug visualization: %s", str(e))
                 
