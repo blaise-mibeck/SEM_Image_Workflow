@@ -121,7 +121,6 @@ class EnhancedMagGridController(MagGridController):
     def create_grid_visualization(self, collection, layout=None, annotation_style="solid", preserve_resolution=True):
         """
         Create enhanced grid visualization for a MagGrid collection.
-        Adds visualization of the template matching results where available.
         
         Args:
             collection (Collection): Collection to visualize
@@ -163,6 +162,10 @@ class EnhancedMagGridController(MagGridController):
         # Load images and get their positions in the grid
         images_info = []
         
+        # Dictionary to store exact image positions in the grid
+        grid_positions = {}
+        
+        # First, populate image positions in the grid
         for i, mag in enumerate(magnifications[:rows*cols]):
             # Calculate grid position
             row = i // cols
@@ -181,6 +184,23 @@ class EnhancedMagGridController(MagGridController):
             cell_x = col * cell_width
             cell_y = row * cell_height
             
+            # Open the image to get dimensions
+            with Image.open(img_path) as img:
+                img_width, img_height = img.size
+            
+            # Calculate the exact position where the image is placed in the grid
+            # This is based on the exact centering logic in the parent class
+            x_pos = cell_x + (cell_width - img_width) // 2
+            y_pos = cell_y + (cell_height - img_height) // 2
+            
+            # Store the position info
+            grid_positions[img_path] = {
+                'x': x_pos,
+                'y': y_pos,
+                'width': img_width,
+                'height': img_height
+            }
+            
             images_info.append({
                 'mag': mag,
                 'path': img_path,
@@ -189,95 +209,104 @@ class EnhancedMagGridController(MagGridController):
                 'cell_x': cell_x,
                 'cell_y': cell_y,
                 'cell_width': cell_width,
-                'cell_height': cell_height
+                'cell_height': cell_height,
+                'x_pos': x_pos,
+                'y_pos': y_pos,
+                'width': img_width,
+                'height': img_height
             })
-            
-        # Draw template matching boxes
+        
+        # Now draw template match boxes using the cached match results
         for low_idx, low_info in enumerate(images_info[:-1]):  # Skip highest mag
             low_mag_path = low_info['path']
-            
-            # Get actual image dimensions
-            low_img = Image.open(low_mag_path)
-            low_img_width, low_img_height = low_img.size
-            
-            # Get cell information
-            cell_x = low_info['cell_x']
-            cell_y = low_info['cell_y']
-            cell_width = low_info['cell_width']
-            cell_height = low_info['cell_height']
             
             # Check for matches with higher magnification images
             for high_info in images_info[low_idx+1:]:
                 high_mag_path = high_info['path']
                 
-                # Check if hierarchical relationship exists
-                if high_mag_path in collection.hierarchy.get(low_mag_path, []):
-                    # Check template match cache
-                    cache_key = (high_mag_path, low_mag_path)
-                    if cache_key in self.template_match_cache:
-                        is_contained, match_result = self.template_match_cache[cache_key]
+                # Skip if not in hierarchy
+                if high_mag_path not in collection.hierarchy.get(low_mag_path, []):
+                    continue
+                
+                # Check template match cache
+                cache_key = (high_mag_path, low_mag_path)
+                if cache_key not in self.template_match_cache:
+                    continue
+                    
+                is_contained, match_result = self.template_match_cache[cache_key]
+                
+                if not is_contained or 'top_left' not in match_result or 'bottom_right' not in match_result:
+                    continue
+                
+                # Get the original match coordinates
+                top_left = match_result['top_left']
+                bottom_right = match_result['bottom_right']
+                
+                # Get the position of the low mag image in the grid
+                low_img_pos = grid_positions.get(low_mag_path)
+                if not low_img_pos:
+                    continue
+                
+                # Calculate the box position in the grid
+                grid_x1 = low_img_pos['x'] + top_left[0]
+                grid_y1 = low_img_pos['y'] + top_left[1]
+                grid_x2 = low_img_pos['x'] + bottom_right[0]
+                grid_y2 = low_img_pos['y'] + bottom_right[1]
+                
+                # Draw rectangle
+                draw.rectangle([grid_x1, grid_y1, grid_x2, grid_y2], outline=(255, 0, 0), width=3)
+                
+                # Draw a second rectangle slightly inside for better visibility
+                inner_margin = 2
+                if grid_x2 - grid_x1 > 10 and grid_y2 - grid_y1 > 10:  # Only if big enough
+                    draw.rectangle([
+                        grid_x1 + inner_margin, 
+                        grid_y1 + inner_margin, 
+                        grid_x2 - inner_margin, 
+                        grid_y2 - inner_margin
+                    ], outline=(255, 255, 0), width=1)
+                
+                # Add match score if available
+                if 'score' in match_result:
+                    score = match_result['score']
+                    try:
+                        font = ImageFont.truetype("arial.ttf", 10)
+                    except:
+                        font = ImageFont.load_default()
                         
-                        if is_contained and 'top_left' in match_result and 'bottom_right' in match_result:
-                            # Get original coordinates from template matching
-                            top_left = match_result['top_left'] 
-                            bottom_right = match_result['bottom_right']
-                            
-                            # Calculate scale factors for displaying in the grid
-                            # We need to scale the original match coordinates to our grid cell
-                            
-                            # Calculate display size of the image in the grid cell (maintaining aspect ratio)
-                            img_aspect = low_img_width / low_img_height
-                            cell_aspect = cell_width / cell_height
-                            
-                            if img_aspect > cell_aspect:
-                                # Image is wider than cell
-                                display_width = cell_width
-                                display_height = int(cell_width / img_aspect)
-                                x_offset = 0
-                                y_offset = (cell_height - display_height) // 2
-                            else:
-                                # Image is taller than cell
-                                display_height = cell_height
-                                display_width = int(cell_height * img_aspect)
-                                x_offset = (cell_width - display_width) // 2
-                                y_offset = 0
-                                
-                            # Calculate scaling factors
-                            scale_x = display_width / low_img_width
-                            scale_y = display_height / low_img_height
-                            
-                            # Calculate bounding box in grid coordinates
-                            grid_x1 = cell_x + x_offset + int(top_left[0] * scale_x)
-                            grid_y1 = cell_y + y_offset + int(top_left[1] * scale_y)
-                            grid_x2 = cell_x + x_offset + int(bottom_right[0] * scale_x)
-                            grid_y2 = cell_y + y_offset + int(bottom_right[1] * scale_y)
-                            
-                            # Draw rectangle
-                            draw.rectangle([grid_x1, grid_y1, grid_x2, grid_y2], outline=(255, 0, 0), width=2)
-                            
-                            # Add match score if available
-                            if 'score' in match_result:
-                                score = match_result['score']
-                                try:
-                                    font = ImageFont.truetype("arial.ttf", 10)
-                                except:
-                                    font = ImageFont.load_default()
-                                    
-                                score_text = f"{score:.2f}"
-                                draw.text((grid_x1 + 5, grid_y1 + 5), score_text, fill=(255, 0, 0), font=font)
-                                
-                            # Add debugging info to match_result for later output
-                            match_result['grid_box'] = {
-                                'top_left': (grid_x1, grid_y1),
-                                'bottom_right': (grid_x2, grid_y2)
-                            }
-                            match_result['display_info'] = {
-                                'low_img_size': (low_img_width, low_img_height),
-                                'cell_size': (cell_width, cell_height),
-                                'display_size': (display_width, display_height),
-                                'offset': (x_offset, y_offset),
-                                'scale': (scale_x, scale_y)
-                            }
+                    score_text = f"{score:.2f}"
+                    draw.text((grid_x1 + 5, grid_y1 + 5), score_text, fill=(255, 0, 0), font=font)
+                
+                # Store the grid coordinates in the match result for later reference
+                match_result['grid_box'] = {
+                    'top_left': (grid_x1, grid_y1),
+                    'bottom_right': (grid_x2, grid_y2)
+                }
+            
+        # Create a debug grid with helper visualization
+        debug_img = grid_img.copy()
+        debug_draw = ImageDraw.Draw(debug_img)
+        
+        # Draw grid cell borders for debugging
+        for info in images_info:
+            # Draw cell border (green)
+            debug_draw.rectangle([
+                info['cell_x'], info['cell_y'], 
+                info['cell_x'] + info['cell_width'] - 1, 
+                info['cell_y'] + info['cell_height'] - 1
+            ], outline=(0, 255, 0), width=1)
+            
+            # Draw image border (blue)
+            debug_draw.rectangle([
+                info['x_pos'], info['y_pos'],
+                info['x_pos'] + info['width'] - 1,
+                info['y_pos'] + info['height'] - 1
+            ], outline=(0, 0, 255), width=1)
+        
+        # Save debug grid image
+        debug_dir = os.path.join(self.workflow_folder, "debug")
+        os.makedirs(debug_dir, exist_ok=True)
+        debug_img.save(os.path.join(debug_dir, f"grid_debug_{collection.name}.png"))
         
         return grid_img
     
@@ -408,21 +437,11 @@ class EnhancedMagGridController(MagGridController):
                         if 'high_img_shape' in match_result:
                             serializable_result["high_img_shape"] = list(match_result["high_img_shape"])
                             
-                        # Grid display information if available
+                        # Grid box coordinates if available
                         if 'grid_box' in match_result:
                             serializable_result["grid_box"] = {
                                 "top_left": list(match_result["grid_box"]["top_left"]),
                                 "bottom_right": list(match_result["grid_box"]["bottom_right"])
-                            }
-                        
-                        # Additional display info
-                        if 'display_info' in match_result:
-                            serializable_result["display_info"] = {
-                                "low_img_size": list(match_result["display_info"]["low_img_size"]),
-                                "cell_size": list(match_result["display_info"]["cell_size"]),
-                                "display_size": list(match_result["display_info"]["display_size"]),
-                                "offset": list(match_result["display_info"]["offset"]),
-                                "scale": list(match_result["display_info"]["scale"])
                             }
                         
                         matches_data[f"{high_name} in {low_name}"] = serializable_result
